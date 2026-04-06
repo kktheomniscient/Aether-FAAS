@@ -1,70 +1,111 @@
-from fastapi import FastAPI, Body, HTTPException
-from redis import Redis
-from rq import Queue
-from shared.tasks import execute_function
-import boto3
-import os
-import secrets
-from werkzeug.security import generate_password_hash, check_password_hash
-
-s3 = boto3.client(
-    's3',
-    endpoint_url=os.getenv("MINIO_ENDPOINT"),
-    aws_access_key_id=os.getenv("MINIO_ACCESS_KEY"),
-    aws_secret_access_key=os.getenv("MINIO_SECRET_KEY"),
-    region_name='us-east-1'
-)
-
-BUCKET_NAME = "lambda-functions"
-
-try:
-    s3.create_bucket(Bucket=BUCKET_NAME)
-except s3.exceptions.BucketAlreadyOwnedByYou:
-    pass
+from fastapi import FastAPI, Body, HTTPException, Depends
+import json
+from shared.tasks import execute_task
+import uuid
+from webServer.auth import router as auth_router, get_current_user
+from webServer.connections import BUCKET_NAME, client, q, s3
 
 app = FastAPI()
-REDIS_URL = os.getenv("REDIS_URL", "redis://redis:6379/0")
-client = Redis.from_url(REDIS_URL, decode_responses=True)
-q = Queue(connection=Redis.from_url(REDIS_URL))
+app.include_router(auth_router)
 
-@app.post("/deploy/{task_id}")
-async def deploy(task_id: str, code: str = Body(...), requirements: str = Body("")):
+
+@app.post("/deploy")
+async def deploy(
+    code: str = Body(...),
+    requirements: str = Body(""),
+    name: str | None = Body(None),
+    description: str | None = Body(None),
+    user_email: str = Depends(get_current_user),
+):
+    # generate task id server-side
+    task_id = uuid.uuid4().hex
+
     # 1. Upload code and requirements to MinIO
     s3.put_object(Bucket=BUCKET_NAME, Key=f"{task_id}/code.py", Body=code)
     s3.put_object(Bucket=BUCKET_NAME, Key=f"{task_id}/requirements.txt", Body=requirements)
+    # 1.b save metadata (name, description, owner)
+    metadata = {
+        "task_id": task_id,
+        "owner": user_email,
+        "name": name or "",
+        "description": description or "",
+    }
+    s3.put_object(Bucket=BUCKET_NAME, Key=f"{task_id}/metadata.txt", Body=json.dumps(metadata))
 
-    # 2. Push task ID to Redis Queue
-    q.enqueue("task_queue", task_id)
-    
-    return {"status": "queued", "task_id": task_id}
+    # register task under the user's Redis set for quick lookup
+    try:
+        client.sadd(f"user:{user_email}:tasks", task_id)
+    except Exception:
+        # non-fatal: continue even if Redis update fails
+        pass
+
+    # done: files uploaded to MinIO, return task_id (no enqueue)
+    return {"status": "uploaded", "task_id": task_id, "owner": user_email}
 
 
-@app.post("/auth/signup")
-def signup(payload: dict = Body(...)):
-    email = payload.get("email")
-    password = payload.get("password")
-    if not email or not password:
-        raise HTTPException(status_code=400, detail="email and password required")
-    key = f"user:{email}"
-    if client.exists(key):
-        raise HTTPException(status_code=400, detail="user already exists")
-    hashed = generate_password_hash(password)
-    client.hset(key, mapping={"password": hashed})
-    return {"email": email, "status": "created"}
+@app.post("/enqueue/{task_id}")
+def enqueue_task(task_id: str, user_email: str = Depends(get_current_user)):
+    # quick check: verify task_id is registered under this user in Redis
+    try:
+        if not client.sismember(f"user:{user_email}:tasks", task_id):
+            raise HTTPException(status_code=403, detail="not allowed to enqueue this task")
+    except HTTPException:
+        raise
+    except Exception:
+        # if Redis is unavailable, fall back to checking metadata ownership in MinIO
+        try:
+            meta_obj = s3.get_object(Bucket=BUCKET_NAME, Key=f"{task_id}/metadata.txt")
+            meta_text = meta_obj["Body"].read().decode("utf-8")
+            meta = json.loads(meta_text)
+            if meta.get("owner") != user_email:
+                raise HTTPException(status_code=403, detail="not allowed to enqueue this task")
+        except HTTPException:
+            raise
+        except Exception:
+            raise HTTPException(status_code=404, detail="task metadata not found")
+
+    # enqueue the task for worker processing
+    job = q.enqueue(execute_task, task_id)
+    return {"status": "queued", "task_id": task_id, "job_id": job.id}
 
 
-@app.post("/auth/signin")
-def signin(payload: dict = Body(...)):
-    email = payload.get("email")
-    password = payload.get("password")
-    if not email or not password:
-        raise HTTPException(status_code=400, detail="email and password required")
-    key = f"user:{email}"
-    if not client.exists(key):
-        raise HTTPException(status_code=404, detail="user not found")
-    hashed = client.hget(key, "password")
-    if not hashed or not check_password_hash(hashed, password):
-        raise HTTPException(status_code=401, detail="invalid credentials")
-    token = secrets.token_urlsafe(32)
-    client.setex(f"session:{token}", 60 * 60 * 24, email)
-    return {"access_token": token, "token_type": "bearer"}
+@app.get("/functions")
+def list_user_functions(user_email: str = Depends(get_current_user)):
+    """Return a list of metadata for functions uploaded by the authenticated user."""
+    results = []
+    BUCKET = BUCKET_NAME
+    kwargs = {"Bucket": BUCKET, "Prefix": ""}
+    # paginate through objects and gather unique task_ids
+    task_ids = set()
+    try:
+        while True:
+            resp = s3.list_objects_v2(**kwargs)
+            for obj in resp.get("Contents", []):
+                key = obj.get("Key", "")
+                if not key:
+                    continue
+                # extract task id from keys like '{task_id}/file'
+                parts = key.split("/", 1)
+                if parts:
+                    task_ids.add(parts[0])
+            if resp.get("IsTruncated"):
+                kwargs["ContinuationToken"] = resp.get("NextContinuationToken")
+            else:
+                break
+    except Exception:
+        # if bucket doesn't exist or other error, return empty list
+        return {"functions": []}
+
+    # fetch metadata for each task_id and filter by owner
+    for tid in task_ids:
+        try:
+            meta_obj = s3.get_object(Bucket=BUCKET, Key=f"{tid}/metadata.txt")
+            meta_text = meta_obj["Body"].read().decode("utf-8")
+            meta = json.loads(meta_text)
+        except Exception:
+            continue
+        if meta.get("owner") == user_email:
+            results.append(meta)
+
+    return {"functions": results}
+
