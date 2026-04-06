@@ -1,6 +1,6 @@
 from fastapi import FastAPI, Body, HTTPException, Depends
 import json
-from shared.tasks import execute_task
+from shared.rq_jobs import run_task_in_sandbox
 import uuid
 from webServer.auth import router as auth_router, get_current_user
 from webServer.connections import BUCKET_NAME, client, q, s3
@@ -65,7 +65,7 @@ def enqueue_task(task_id: str, user_email: str = Depends(get_current_user)):
             raise HTTPException(status_code=404, detail="task metadata not found")
 
     # enqueue the task for worker processing
-    job = q.enqueue(execute_task, task_id)
+    job = q.enqueue(run_task_in_sandbox, task_id)
     return {"status": "queued", "task_id": task_id, "job_id": job.id}
 
 

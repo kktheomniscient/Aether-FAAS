@@ -2,3 +2,4 @@ redis==5.0.1
 rq==1.15.1
 watchdog
 boto3
+docker==7.1.0

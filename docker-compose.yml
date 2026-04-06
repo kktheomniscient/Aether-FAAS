@@ -35,11 +35,16 @@ services:
     build: ./worker
     volumes:
       - .:/app
+      - /var/run/docker.sock:/var/run/docker.sock
     environment:
       - REDIS_URL=redis://redis:6379/0
       - MINIO_ENDPOINT=http://minio:9000
       - MINIO_ACCESS_KEY=admin
       - MINIO_SECRET_KEY=password
+      - SANDBOX_RUNTIME_IMAGE=python:3.11-slim
+      - SANDBOX_MEMORY_LIMIT=256m
+      - SANDBOX_CPU_LIMIT=0.50
+      - SANDBOX_TIMEOUT_SECONDS=120
       - PYTHONPATH=/app
     depends_on:
       - redis
