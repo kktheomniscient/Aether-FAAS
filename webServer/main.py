@@ -21,8 +21,17 @@ async def deploy(
     task_id = uuid.uuid4().hex
 
     # 1. Upload code and requirements to MinIO
-    s3.put_object(Bucket=BUCKET_NAME, Key=f"{task_id}/code.py", Body=code)
-    s3.put_object(Bucket=BUCKET_NAME, Key=f"{task_id}/requirements.txt", Body=requirements)
+    s3.put_object(
+        Bucket=BUCKET_NAME, Key=f"{task_id}/code.py", 
+        Body=code, 
+        content_type="text/plain"
+    )
+    s3.put_object(
+        Bucket=BUCKET_NAME, 
+        Key=f"{task_id}/requirements.txt", 
+        Body=requirements, 
+        content_type="text/plain"
+    )
     # 1.b save metadata (name, description, owner)
     metadata = {
         "task_id": task_id,
@@ -30,7 +39,11 @@ async def deploy(
         "name": name or "",
         "description": description or "",
     }
-    s3.put_object(Bucket=BUCKET_NAME, Key=f"{task_id}/metadata.txt", Body=json.dumps(metadata))
+    s3.put_object(
+        Bucket=BUCKET_NAME, Key=f"{task_id}/metadata.txt", 
+        Body=json.dumps(metadata), 
+        content_type="text/plain"
+    )
 
     # register task under the user's Redis set for quick lookup
     try:
@@ -67,6 +80,28 @@ def enqueue_task(task_id: str, user_email: str = Depends(get_current_user)):
     # enqueue the task for worker processing
     job = q.enqueue(run_task_in_sandbox, task_id)
     return {"status": "queued", "task_id": task_id, "job_id": job.id}
+
+
+@app.get("/job/{job_id}")
+def get_job_result(job_id: str, user_email: str = Depends(get_current_user)):
+    """Retrieve the execution result of a queued job."""
+    try:
+        job = q.fetch_job(job_id)
+        if job is None:
+            raise HTTPException(status_code=404, detail="job not found")
+        
+        return {
+            "job_id": job_id,
+            "status": job.get_status(),
+            "result": job.result if job.result else None,
+            "is_finished": job.is_finished,
+            "is_failed": job.is_failed,
+            "exc_info": job.exc_info if job.exc_info else None,
+        }
+    except HTTPException:
+        raise
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=str(exc))
 
 
 @app.get("/functions")
