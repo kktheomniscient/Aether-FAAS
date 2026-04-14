@@ -84,7 +84,7 @@ def execute_task_in_sandbox(task_id: str, job_id: str | None) -> dict[str, Any]:
                 "\""
             ),
             working_dir="/workspace",
-            network_disabled=True,
+            # network_disabled=True,
             mem_limit=MEMORY_LIMIT,
             nano_cpus=NANO_CPUS,
             detach=True,
@@ -117,6 +117,7 @@ def execute_task_in_sandbox(task_id: str, job_id: str | None) -> dict[str, Any]:
             "task_id": task_id,
             "status": "failed",
             "phase": "sandbox-run",
+            "logs": logs,
             "error": str(exc),
             "container_name": container_name,
         }
