@@ -1,5 +1,6 @@
 from fastapi import APIRouter, Depends, HTTPException
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
+from pydantic import BaseModel
 from werkzeug.security import check_password_hash, generate_password_hash
 import secrets
 
@@ -7,6 +8,15 @@ from webServer.connections import client
 
 router = APIRouter(prefix="/auth", tags=["auth"])
 security = HTTPBearer()
+
+
+class AuthRequest(BaseModel):
+    email: str
+    password: str
+
+
+def _normalize_email(email: str) -> str:
+    return email.strip().lower()
 
 
 def get_current_user(credentials: HTTPAuthorizationCredentials = Depends(security)):
@@ -18,7 +28,10 @@ def get_current_user(credentials: HTTPAuthorizationCredentials = Depends(securit
 
 
 @router.post("/signup")
-def signup(email: str, password: str):
+def signup(payload: AuthRequest):
+    email = _normalize_email(payload.email)
+    password = payload.password
+
     if not email or not password:
         raise HTTPException(status_code=400, detail="email and password required")
 
@@ -32,7 +45,10 @@ def signup(email: str, password: str):
 
 
 @router.post("/signin")
-def signin(email: str, password: str):
+def signin(payload: AuthRequest):
+    email = _normalize_email(payload.email)
+    password = payload.password
+
     if not email or not password:
         raise HTTPException(status_code=400, detail="email and password required")
 
@@ -46,4 +62,16 @@ def signin(email: str, password: str):
 
     token = secrets.token_urlsafe(32)
     client.setex(f"session:{token}", 60 * 60 * 24, email)
-    return {"access_token": token, "token_type": "bearer"}
+    return {"access_token": token, "token_type": "bearer", "email": email}
+
+
+@router.get("/me")
+def me(user_email: str = Depends(get_current_user)):
+    return {"email": user_email}
+
+
+@router.post("/signout")
+def signout(credentials: HTTPAuthorizationCredentials = Depends(security)):
+    token = credentials.credentials
+    client.delete(f"session:{token}")
+    return {"status": "signed_out"}

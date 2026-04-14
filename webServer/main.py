@@ -1,4 +1,6 @@
+import os
 from fastapi import FastAPI, Body, HTTPException, Depends
+from fastapi.middleware.cors import CORSMiddleware
 import json
 from typing import Any
 from shared.rq_jobs import run_task_in_sandbox
@@ -7,6 +9,24 @@ from webServer.auth import router as auth_router, get_current_user
 from webServer.connections import BUCKET_NAME, client, q, s3
 
 app = FastAPI()
+
+allowed_origins = [
+    origin.strip()
+    for origin in os.getenv(
+        "CORS_ALLOWED_ORIGINS",
+        "http://localhost:5173,http://127.0.0.1:5173,http://localhost:3000,http://127.0.0.1:3000,http://localhost:8080,http://127.0.0.1:8080",
+    ).split(",")
+    if origin.strip()
+]
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=allowed_origins,
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
 app.include_router(auth_router)
 
 
