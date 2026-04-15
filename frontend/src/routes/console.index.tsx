@@ -1,9 +1,9 @@
 import { createFileRoute, Link, redirect } from "@tanstack/react-router";
 import { Search, Plus, LogOut, Play, Clock } from "lucide-react";
-import { useState } from "react";
+import { useMemo, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { clearAuthSession, getAuthSession, getAuthToken } from "@/lib/auth";
-import { getMe, signOut } from "@/lib/api";
+import { getMe, listFunctions, signOut } from "@/lib/api";
 
 export const Route = createFileRoute("/console/")({
   beforeLoad: () => {
@@ -20,13 +20,45 @@ export const Route = createFileRoute("/console/")({
   component: ConsolePage,
 });
 
-const mockFunctions = [
-  { id: "1", name: "hello-world", description: "A simple hello world endpoint", status: "ready", jobs: 142 },
-  { id: "2", name: "data-scraper", description: "Scrapes product data from e-commerce sites", status: "ready", jobs: 89 },
-  { id: "3", name: "pdf-generator", description: "Generates PDF reports from JSON data", status: "deploying", jobs: 23 },
-  { id: "4", name: "email-sender", description: "Sends transactional emails via SMTP", status: "ready", jobs: 567 },
-  { id: "5", name: "image-resize", description: "Resizes images to predefined dimensions", status: "error", jobs: 0 },
-];
+type ConsoleFunctionCard = {
+  id: string;
+  name: string;
+  description: string;
+  status: "ready" | "deploying" | "error";
+  jobs: number;
+  lastRunLabel: string;
+};
+
+function asString(value: unknown, fallback: string): string {
+  return typeof value === "string" && value.trim().length > 0
+    ? value
+    : fallback;
+}
+
+function toConsoleStatus(status: unknown): "ready" | "deploying" | "error" {
+  if (typeof status !== "string") {
+    return "ready";
+  }
+  const normalized = status.toLowerCase();
+  if (normalized === "deploying") {
+    return "deploying";
+  }
+  if (normalized === "error") {
+    return "error";
+  }
+  return "ready";
+}
+
+function formatLastRunLabel(value: unknown): string {
+  if (typeof value !== "string" || value.trim().length === 0) {
+    return "n/a";
+  }
+  const parsed = new Date(value);
+  if (Number.isNaN(parsed.getTime())) {
+    return "n/a";
+  }
+  return parsed.toLocaleString();
+}
 
 function ConsolePage() {
   const queryClient = useQueryClient();
@@ -40,6 +72,14 @@ function ConsolePage() {
     queryFn: () => getMe(token as string),
     enabled: Boolean(token),
     staleTime: 60_000,
+    retry: false,
+  });
+
+  const functionsQuery = useQuery({
+    queryKey: ["functions", token],
+    queryFn: () => listFunctions(token as string),
+    enabled: Boolean(token),
+    staleTime: 30_000,
     retry: false,
   });
 
@@ -66,8 +106,29 @@ function ConsolePage() {
 
   const sessionEmail = sessionQuery.data?.email ?? userSession?.email;
 
-  const filtered = mockFunctions.filter(
-    (f) => f.name.includes(search.toLowerCase()) || f.description.toLowerCase().includes(search.toLowerCase())
+  const functionCards = useMemo<ConsoleFunctionCard[]>(() => {
+    const rawFunctions = functionsQuery.data?.functions ?? [];
+
+    return rawFunctions
+      .filter((fn) => fn.task_id.length > 0)
+      .map((fn) => ({
+        id: fn.task_id,
+        name: asString(fn.name, `function-${fn.task_id.slice(0, 8)}`),
+        description: asString(fn.description, "No description provided."),
+        status: toConsoleStatus(fn.status),
+        jobs:
+          typeof fn.summary?.runs_count === "number"
+            ? fn.summary.runs_count
+            : 0,
+        lastRunLabel: formatLastRunLabel(fn.summary?.last_run_at),
+      }));
+  }, [functionsQuery.data]);
+
+  const normalizedSearch = search.trim().toLowerCase();
+  const filtered = functionCards.filter(
+    (f) =>
+      f.name.toLowerCase().includes(normalizedSearch) ||
+      f.description.toLowerCase().includes(normalizedSearch),
   );
 
   return (
@@ -85,7 +146,9 @@ function ConsolePage() {
             <span className="text-muted-foreground">/</span>
             <span className="text-sm font-semibold">Console</span>
             {sessionEmail && (
-              <span className="text-xs text-muted-foreground">{sessionEmail}</span>
+              <span className="text-xs text-muted-foreground">
+                {sessionEmail}
+              </span>
             )}
           </div>
           <button
@@ -113,7 +176,10 @@ function ConsolePage() {
               className="brutal-input w-full pl-10 pr-4 py-3 text-sm"
             />
           </div>
-          <Link to="/console/new" className="brutal-btn brutal-btn-primary px-6 py-3 text-sm flex items-center gap-2 justify-center">
+          <Link
+            to="/console/new"
+            className="brutal-btn brutal-btn-primary px-6 py-3 text-sm flex items-center gap-2 justify-center"
+          >
             <Plus className="h-4 w-4" strokeWidth={3} />
             New Function
           </Link>
@@ -121,6 +187,27 @@ function ConsolePage() {
 
         {/* Function Cards */}
         <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-3">
+          {functionsQuery.isLoading && (
+            <div className="brutal-card p-6 text-sm text-muted-foreground md:col-span-2 lg:col-span-3">
+              Loading functions...
+            </div>
+          )}
+
+          {functionsQuery.isError && (
+            <div className="brutal-card p-6 text-sm text-destructive md:col-span-2 lg:col-span-3">
+              {(functionsQuery.error as Error).message ||
+                "Failed to load functions."}
+            </div>
+          )}
+
+          {!functionsQuery.isLoading &&
+            !functionsQuery.isError &&
+            filtered.length === 0 && (
+              <div className="brutal-card p-6 text-sm text-muted-foreground md:col-span-2 lg:col-span-3">
+                No functions found.
+              </div>
+            )}
+
           {filtered.map((fn) => (
             <Link
               key={fn.id}
@@ -142,13 +229,15 @@ function ConsolePage() {
                   {fn.status}
                 </span>
               </div>
-              <p className="text-sm text-muted-foreground mb-4 leading-relaxed">{fn.description}</p>
+              <p className="text-sm text-muted-foreground mb-4 leading-relaxed">
+                {fn.description}
+              </p>
               <div className="flex items-center gap-4 text-xs text-muted-foreground">
                 <span className="flex items-center gap-1">
                   <Play className="h-3 w-3" /> {fn.jobs} runs
                 </span>
                 <span className="flex items-center gap-1">
-                  <Clock className="h-3 w-3" /> 2m ago
+                  <Clock className="h-3 w-3" /> {fn.lastRunLabel}
                 </span>
               </div>
             </Link>
