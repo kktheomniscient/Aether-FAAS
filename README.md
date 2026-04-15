@@ -3,6 +3,7 @@
 Aether is a Function-as-a-Service (FaaS) platform for writing, deploying, and executing Python functions in isolated Docker sandboxes.
 
 This project combines:
+
 - A React + TanStack frontend for authentication, function editing, and job history
 - A FastAPI backend for auth, function/task storage, and job orchestration
 - An RQ worker for sandboxed execution
@@ -19,11 +20,13 @@ This project combines:
 6. Configuration
 7. API Reference
 8. Function Execution Lifecycle
-9. License
+9. Frontend Screenshots
+10. License
 
 ## Overview
 
 Aether is a developer-focused FaaS platform that lets users:
+
 - Create an account and sign in
 - Create functions with code and requirements
 - Save and update existing functions
@@ -101,6 +104,7 @@ docker compose up --build
 ```
 
 This starts:
+
 - Redis on `6379`
 - MinIO API on `9000`
 - MinIO Console on `9001`
@@ -133,18 +137,18 @@ Frontend dev server is typically `http://localhost:5173`.
 
 Configured in `docker-compose.yml`.
 
-| Variable | Service | Default in Compose | Purpose |
-|---|---|---|---|
-| `REDIS_URL` | webserver, worker | `redis://redis:6379/0` | Redis connection |
-| `MINIO_ENDPOINT` | webserver, worker | `http://minio:9000` | MinIO endpoint |
-| `MINIO_ACCESS_KEY` | webserver, worker | `admin` | MinIO access key |
-| `MINIO_SECRET_KEY` | webserver, worker | `password` | MinIO secret key |
-| `SANDBOX_RUNTIME_IMAGE` | worker | `python:3.11-slim` | Execution runtime image |
-| `SANDBOX_MEMORY_LIMIT` | worker | `256m` | Per-run memory limit |
-| `SANDBOX_CPU_LIMIT` | worker | `0.50` | Per-run CPU fraction |
-| `SANDBOX_TIMEOUT_SECONDS` | worker | `120` | Per-run timeout |
-| `BUCKET_NAME` | webserver, worker | `lambda-functions` | MinIO bucket |
-| `CORS_ALLOWED_ORIGINS` | webserver | builtin default list | CORS allowlist |
+| Variable                  | Service           | Default in Compose     | Purpose                 |
+| ------------------------- | ----------------- | ---------------------- | ----------------------- |
+| `REDIS_URL`               | webserver, worker | `redis://redis:6379/0` | Redis connection        |
+| `MINIO_ENDPOINT`          | webserver, worker | `http://minio:9000`    | MinIO endpoint          |
+| `MINIO_ACCESS_KEY`        | webserver, worker | `admin`                | MinIO access key        |
+| `MINIO_SECRET_KEY`        | webserver, worker | `password`             | MinIO secret key        |
+| `SANDBOX_RUNTIME_IMAGE`   | worker            | `python:3.11-slim`     | Execution runtime image |
+| `SANDBOX_MEMORY_LIMIT`    | worker            | `256m`                 | Per-run memory limit    |
+| `SANDBOX_CPU_LIMIT`       | worker            | `0.50`                 | Per-run CPU fraction    |
+| `SANDBOX_TIMEOUT_SECONDS` | worker            | `120`                  | Per-run timeout         |
+| `BUCKET_NAME`             | webserver, worker | `lambda-functions`     | MinIO bucket            |
+| `CORS_ALLOWED_ORIGINS`    | webserver         | builtin default list   | CORS allowlist          |
 
 ### Frontend Environment Variables
 
@@ -185,6 +189,7 @@ Auth-protected routes require `Authorization: Bearer <token>`.
 ### Status Fields
 
 Job responses include:
+
 - `status` (effective execution status)
 - `rq_status` (raw RQ status)
 - `is_finished`
@@ -199,6 +204,34 @@ Job responses include:
 4. Worker installs dependencies (if provided), runs code, captures logs and timing
 5. Worker returns result payload to RQ
 6. Frontend polls job/task endpoints for live status and details
+
+## Frontend Screenshots
+
+The following are placeholder mock images. Replace these files with real screenshots from your local app when ready.
+
+### Landing/Home Page
+
+![Aether Home Screenshot](assets/screenshots/home.png)
+
+### Authentication Page
+
+![Aether Auth Screenshot](assets/screenshots/auth.png)
+
+### Console Page
+
+![Aether Console Screenshot](assets/screenshots/console.png)
+
+### New Function Page
+
+![Aether New Function Screenshot](assets/screenshots/new-function.png)
+
+### Function Workspace (Editor Tab)
+
+![Aether Function Editor Screenshot](assets/screenshots/function-editor.png)
+
+### Function Workspace (Job History Tab)
+
+![Aether Function Job History Screenshot](assets/screenshots/function-jobs.png)
 
 ## License
 
