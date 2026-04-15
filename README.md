@@ -19,10 +19,7 @@ This project combines:
 6. Configuration
 7. API Reference
 8. Function Execution Lifecycle
-9. Frontend Notes
-10. Troubleshooting
-11. Security and Operational Notes
-12. License
+9. License
 
 ## Overview
 
@@ -202,60 +199,6 @@ Job responses include:
 4. Worker installs dependencies (if provided), runs code, captures logs and timing
 5. Worker returns result payload to RQ
 6. Frontend polls job/task endpoints for live status and details
-
-## Frontend Notes
-
-- Editor supports tab insertion in textareas
-- Job history sidebar polls for status changes
-- Jobs are displayed newest-first by timestamp
-- Output panel excludes logs; logs are shown only in the logs panel
-
-## Troubleshooting
-
-### Function run fails with dependency import error
-
-Common cause: invalid `requirements.txt` entry format.
-
-Use package specs, for example:
-
-```text
-requests==2.32.0
-```
-
-Avoid shell commands inside requirements, for example:
-
-```text
-pip install requests
-```
-
-### CORS and preflight behavior
-
-- Cross-origin requests with `Authorization` usually trigger browser preflight (`OPTIONS`)
-- This is expected browser behavior, not a missing explicit backend endpoint
-
-### Worker cannot execute containers
-
-Ensure Docker socket mount exists for worker:
-
-- Compose already mounts: `/var/run/docker.sock:/var/run/docker.sock`
-- Docker daemon must be running on host
-
-### MinIO bucket or artifact issues
-
-- Verify MinIO container is healthy
-- Check credentials in compose env vars
-- Confirm `BUCKET_NAME` is consistent across webserver and worker
-
-## Security and Operational Notes
-
-- This setup is intended for local/dev workflows
-- Executing user code in containers is still sensitive; harden further for production:
-  - strict network controls
-  - stronger isolation profiles
-  - dependency and content scanning
-  - authentication hardening
-  - secrets management
-  - audit logging and rate limiting
 
 ## License
 
