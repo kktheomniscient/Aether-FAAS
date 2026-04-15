@@ -1,9 +1,15 @@
 import { createFileRoute, Link, redirect } from "@tanstack/react-router";
 import { Save, Play, ChevronRight, ArrowLeft } from "lucide-react";
-import { useEffect, useState } from "react";
+import { type KeyboardEvent, useEffect, useMemo, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { getAuthToken } from "@/lib/auth";
-import { enqueueTask, getJob, getTask, updateTask } from "@/lib/api";
+import {
+  enqueueTask,
+  getJob,
+  getTask,
+  listTaskJobs,
+  updateTask,
+} from "@/lib/api";
 
 export const Route = createFileRoute("/console/$functionId")({
   beforeLoad: () => {
@@ -35,7 +41,9 @@ function toJobVisualStatus(status: string | undefined): JobVisualStatus {
   if (["finished", "completed", "success"].includes(normalized)) {
     return "success";
   }
-  if (["failed", "error"].includes(normalized)) {
+  if (
+    ["failed", "error", "stopped", "canceled", "cancelled"].includes(normalized)
+  ) {
     return "error";
   }
   if (["started", "running"].includes(normalized)) {
@@ -99,6 +107,110 @@ function formatDurationLabel(value: number | null | undefined): string {
   return `${value.toFixed(2)}s`;
 }
 
+function asInt(value: unknown): number | null {
+  if (typeof value === "number" && Number.isFinite(value)) {
+    return Math.trunc(value);
+  }
+  if (typeof value === "string") {
+    const trimmed = value.trim();
+    const parsed = Number(trimmed);
+    if (Number.isFinite(parsed)) {
+      return Math.trunc(parsed);
+    }
+  }
+  return null;
+}
+
+function extractResultStatus(result: unknown): string | undefined {
+  if (!result || typeof result !== "object" || Array.isArray(result)) {
+    return undefined;
+  }
+  const raw = (result as Record<string, unknown>).status;
+  return typeof raw === "string" ? raw : undefined;
+}
+
+function extractResultExitCode(result: unknown): number | null {
+  if (!result || typeof result !== "object" || Array.isArray(result)) {
+    return null;
+  }
+  const shape = result as Record<string, unknown>;
+  return asInt(shape.exit_code) ?? asInt(shape.StatusCode);
+}
+
+function deriveEffectiveStatus(
+  baseStatus: string | undefined,
+  result: unknown,
+): string {
+  const resultStatus = extractResultStatus(result)?.toLowerCase();
+  const resultExitCode = extractResultExitCode(result);
+
+  if (
+    resultStatus &&
+    ["failed", "error", "exited", "dead", "oomkilled", "killed"].includes(
+      resultStatus,
+    )
+  ) {
+    return "failed";
+  }
+
+  if (typeof resultExitCode === "number" && resultExitCode !== 0) {
+    return "failed";
+  }
+
+  if (
+    resultStatus &&
+    ["success", "completed", "finished"].includes(resultStatus)
+  ) {
+    return "completed";
+  }
+
+  return baseStatus ?? "unknown";
+}
+
+function toTimestampMs(value: string | null | undefined): number {
+  if (!value) {
+    return 0;
+  }
+  const parsed = Date.parse(value);
+  return Number.isNaN(parsed) ? 0 : parsed;
+}
+
+function jobSortKey(job: {
+  ended_at?: string | null;
+  started_at?: string | null;
+  enqueued_at?: string | null;
+  created_at?: string | null;
+}): number {
+  return Math.max(
+    toTimestampMs(job.ended_at),
+    toTimestampMs(job.started_at),
+    toTimestampMs(job.enqueued_at),
+    toTimestampMs(job.created_at),
+  );
+}
+
+function resultWithoutLogs(result: unknown): unknown {
+  if (!result || typeof result !== "object" || Array.isArray(result)) {
+    return result;
+  }
+
+  const { logs: _logs, ...rest } = result as Record<string, unknown>;
+  return rest;
+}
+
+function hasStructuredOutput(result: unknown): boolean {
+  if (result === null || result === undefined) {
+    return false;
+  }
+  if (typeof result !== "object") {
+    return true;
+  }
+  if (Array.isArray(result)) {
+    return result.length > 0;
+  }
+  return Object.keys(result).length > 0;
+}
+
 function FunctionWorkspace() {
   const queryClient = useQueryClient();
   const { functionId } = Route.useParams();
@@ -146,16 +258,38 @@ function FunctionWorkspace() {
 
   const jobs = taskQuery.data?.jobs ?? [];
 
+  const jobsQuery = useQuery({
+    queryKey: ["task-jobs", functionId, token],
+    queryFn: () => listTaskJobs(token as string, functionId),
+    enabled: Boolean(token && functionId && activeTab === "jobs"),
+    retry: false,
+    refetchInterval: 3_000,
+    refetchIntervalInBackground: true,
+  });
+
+  const displayedJobs = jobsQuery.data?.jobs ?? jobs;
+  const sortedJobs = useMemo(
+    () =>
+      [...displayedJobs].sort((a, b) => {
+        const timeDelta = jobSortKey(b) - jobSortKey(a);
+        if (timeDelta !== 0) {
+          return timeDelta;
+        }
+        return b.job_id.localeCompare(a.job_id);
+      }),
+    [displayedJobs],
+  );
+
   useEffect(() => {
-    if (jobs.length === 0) {
+    if (sortedJobs.length === 0) {
       setSelectedJob(null);
       return;
     }
-    if (selectedJob && jobs.some((job) => job.job_id === selectedJob)) {
+    if (selectedJob && sortedJobs.some((job) => job.job_id === selectedJob)) {
       return;
     }
-    setSelectedJob(jobs[0]?.job_id ?? null);
-  }, [jobs, selectedJob]);
+    setSelectedJob(sortedJobs[0]?.job_id ?? null);
+  }, [sortedJobs, selectedJob]);
 
   const selectedJobQuery = useQuery({
     queryKey: ["job", selectedJob, token],
@@ -184,6 +318,9 @@ function FunctionWorkspace() {
       await queryClient.invalidateQueries({
         queryKey: ["task", functionId, token],
       });
+      await queryClient.invalidateQueries({
+        queryKey: ["task-jobs", functionId, token],
+      });
     },
   });
 
@@ -196,8 +333,34 @@ function FunctionWorkspace() {
       await queryClient.invalidateQueries({
         queryKey: ["task", functionId, token],
       });
+      await queryClient.invalidateQueries({
+        queryKey: ["task-jobs", functionId, token],
+      });
     },
   });
+
+  const handleTextareaTab = (
+    event: KeyboardEvent<HTMLTextAreaElement>,
+    setValue: (value: string) => void,
+  ) => {
+    if (event.key !== "Tab") {
+      return;
+    }
+
+    event.preventDefault();
+
+    const textarea = event.currentTarget;
+    const start = textarea.selectionStart;
+    const end = textarea.selectionEnd;
+    const nextValue = `${textarea.value.slice(0, start)}\t${textarea.value.slice(end)}`;
+
+    setValue(nextValue);
+
+    requestAnimationFrame(() => {
+      textarea.selectionStart = start + 1;
+      textarea.selectionEnd = start + 1;
+    });
+  };
 
   const handleSave = async () => {
     if (!token) {
@@ -229,10 +392,15 @@ function FunctionWorkspace() {
     }
   };
 
-  const selectedJobSummary = jobs.find((job) => job.job_id === selectedJob);
-  const selectedJobStatus = toJobVisualStatus(
-    selectedJobQuery.data?.status ?? selectedJobSummary?.status,
+  const selectedJobSummary = displayedJobs.find(
+    (job) => job.job_id === selectedJob,
   );
+  const selectedResult = selectedJobQuery.data?.result;
+  const selectedEffectiveStatus = deriveEffectiveStatus(
+    selectedJobQuery.data?.status ?? selectedJobSummary?.status,
+    selectedResult,
+  );
+  const selectedJobStatus = toJobVisualStatus(selectedEffectiveStatus);
   const selectedDurationSeconds =
     selectedJobQuery.data?.duration_seconds ??
     selectedJobSummary?.duration_seconds;
@@ -242,11 +410,13 @@ function FunctionWorkspace() {
       selectedJobSummary?.enqueued_at ??
       selectedJobSummary?.created_at,
   );
-  const selectedResult = selectedJobQuery.data?.result;
+  const sanitizedOutputResult = resultWithoutLogs(selectedResult);
   const outputText = selectedJobQuery.isLoading
     ? "Loading..."
     : JSON.stringify(
-        selectedResult ?? { message: "No result payload returned." },
+        hasStructuredOutput(sanitizedOutputResult)
+          ? sanitizedOutputResult
+          : { message: "No structured output returned." },
         null,
         2,
       );
@@ -359,7 +529,7 @@ function FunctionWorkspace() {
                 : "border-transparent hover:bg-muted"
             }`}
           >
-            Job History ({jobs.length})
+            Job History ({sortedJobs.length})
           </button>
         </div>
       </div>
@@ -378,6 +548,7 @@ function FunctionWorkspace() {
               <textarea
                 value={code}
                 onChange={(e) => setCode(e.target.value)}
+                onKeyDown={(event) => handleTextareaTab(event, setCode)}
                 className="flex-1 w-full p-6 font-mono text-sm leading-relaxed bg-card resize-none focus:outline-none min-h-[400px]"
                 spellCheck={false}
               />
@@ -422,6 +593,9 @@ function FunctionWorkspace() {
                 <textarea
                   value={requirements}
                   onChange={(e) => setRequirements(e.target.value)}
+                  onKeyDown={(event) =>
+                    handleTextareaTab(event, setRequirements)
+                  }
                   className="brutal-input w-full p-3 font-mono text-sm leading-relaxed resize-none min-h-[120px]"
                   spellCheck={false}
                 />
@@ -439,14 +613,21 @@ function FunctionWorkspace() {
                 </span>
               </div>
               <div className="divide-y-2 divide-foreground">
-                {jobs.length === 0 && (
+                {sortedJobs.length === 0 && (
                   <div className="px-4 py-6 text-sm text-muted-foreground">
                     No jobs yet.
                   </div>
                 )}
 
-                {jobs.map((job) => {
-                  const visualStatus = toJobVisualStatus(job.status);
+                {sortedJobs.map((job) => {
+                  const effectiveJobStatus =
+                    job.job_id === selectedJob
+                      ? deriveEffectiveStatus(
+                          selectedJobQuery.data?.status ?? job.status,
+                          selectedResult,
+                        )
+                      : deriveEffectiveStatus(job.status, undefined);
+                  const visualStatus = toJobVisualStatus(effectiveJobStatus);
                   return (
                     <button
                       key={job.job_id}

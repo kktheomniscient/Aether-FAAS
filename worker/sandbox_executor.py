@@ -1,6 +1,8 @@
 import io
 import tarfile
 import uuid
+import time
+from datetime import datetime, timezone
 from typing import Any
 
 import docker
@@ -56,6 +58,7 @@ def _ensure_runtime_image() -> None:
 def execute_task_in_sandbox(task_id: str, job_id: str | None) -> dict[str, Any]:
     """Fetch task artifacts and run user code in a constrained, isolated container."""
     container = None
+    logs = ""
     container_name = f"fn-run-{task_id[:8]}-{uuid.uuid4().hex[:6]}"
 
     try:
@@ -93,16 +96,24 @@ def execute_task_in_sandbox(task_id: str, job_id: str | None) -> dict[str, Any]:
 
         archive = _build_workspace_archive(code=code, requirements=requirements)
         container.put_archive("/", archive)
+        started_at = datetime.now(timezone.utc)
+        start_perf = time.perf_counter()
         container.start()
         wait_result = container.wait(timeout=TIMEOUT_SECONDS)
+        end_perf = time.perf_counter()
+        ended_at = datetime.now(timezone.utc)
         logs = container.logs(stdout=True, stderr=True).decode("utf-8", errors="replace")
         exit_code = int(wait_result.get("StatusCode", 1))
+        container_duration_seconds = max(end_perf - start_perf, 0.0)
 
         return {
             "job_id": job_id,
             "task_id": task_id,
             "status": "completed" if exit_code == 0 else "failed",
             "exit_code": exit_code,
+            "started_at": started_at.isoformat(),
+            "ended_at": ended_at.isoformat(),
+            "container_execution_duration_seconds": container_duration_seconds,
             "logs": logs,
             "container_name": container_name,
             "resource_limits": {
